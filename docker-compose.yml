@@ -1,0 +1,12 @@
+services:
+  statsrag:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8501:8501"
+    volumes:
+      - ./data:/data
+    environment:
+      - VO2RAG_DATA_DIR=/data
+    restart: unless-stopped

@@ -1,0 +1,29 @@
+Predictive target (estimand)
+- The predictive target is vo2_l_min for a new individual with observed predictors, using a linear model for log(vo2_l_min).
+
+Model comparison and validation
+- All candidate models were fitted on the same analytic rows (complete cases across vo2_l_min and all predictors used by any candidate model): n = 3930.
+- 10-fold cross-validation (k = 10, seed = 20260203) was used to estimate out-of-sample predictive error.
+- Primary metric: RMSE on the log scale (rmse_log). Best model by rmse_log was Model 1.
+  • Model 1 rmse_log = 0.185810, rmse_raw = 0.492365, MAE_raw = 0.374957, R²_log = 0.732390.
+  • AIC = -2079.403, BIC = -2048.021 (lower is better, for these fitted models on the same data).
+
+Best model (frequentist OLS on log outcome)
+- Model 1 formula: log(vo2_l_min) ~ Lnmasskg + bodyfat + Sex + Age2.
+- Interpretation of coefficients is on a multiplicative (percentage) scale for vo2_l_min because the outcome is logged.
+
+Effect sizes (with 95% confidence intervals; no causal interpretation implied)
+- Lnmasskg: multiplicative factor per +1 unit = 1.8896 (95% CI 1.8131 to 1.9693), equivalent to 88.96% change (CI 81.31% to 96.93%).
+- bodyfat: multiplicative factor per +1 unit = 0.9877 (95% CI 0.9868 to 0.9886), equivalent to -1.23% change (CI -1.32% to -1.14%).
+- Age2: multiplicative factor per +1 unit = 0.9999 (95% CI 0.9999 to 0.9999), equivalent to -0.01% change (CI -0.01% to -0.01%).
+- C(Sex)[T.Male]: multiplicative factor relative to the reference Sex category = 1.2647 (95% CI 1.2397 to 1.2902).
+
+What a 95% confidence interval means (repeated sampling interpretation)
+- If the same sampling and modelling procedure were repeated many times on new samples from the same data-generating process, then 95% of the intervals constructed in this way would contain the true parameter value. It is not a 95% probability statement about the parameter for this single fitted model.
+
+Model assumptions and limitations
+- Linearity on the log scale: the expected log(vo2_l_min) is a linear function of the included predictors.
+- Independent errors and correct specification: residuals are assumed independent with mean zero; omitted variables and measurement error can reduce predictive performance and distort coefficient interpretations.
+- Approximate normality and constant variance of residuals on the log scale are assumed for standard errors and confidence intervals; diagnostics in diagnostics.json summarise checks.
+- Predictive performance is estimated via 10-fold CV within this dataset; performance may differ in external populations or under dataset shift.
+- Associations described above should not be interpreted as causal effects because no causal identification strategy has been specified.

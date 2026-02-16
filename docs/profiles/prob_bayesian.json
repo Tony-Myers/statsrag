@@ -1,0 +1,34 @@
+{
+  "name": "bayesian",
+  "ui": {
+    "validation_methods": [
+      "psis_loo",
+      "kfold_cv",
+      "bootstrap",
+      "none"
+    ],
+    "metrics": [
+      "elpd_loo",
+      "looic",
+      "elpd_waic",
+      "waic",
+      "rmse_log",
+      "rmse_raw",
+      "mae"
+    ],
+    "information_criteria": [
+      "LOO",
+      "WAIC",
+      "none"
+    ]
+  },
+  "prohibitions": [
+    "Do not interpret a credible interval as a frequentist confidence interval.",
+    "Do not report Bayes factors without specifying prior model odds and priors."
+  ],
+  "required_reporting": [
+    "State priors (or prior families) for all key parameters.",
+    "Report posterior summaries and credible intervals and label them as such.",
+    "Report PSIS-LOO diagnostics (e.g., Pareto-k) when using LOO."
+  ]
+}

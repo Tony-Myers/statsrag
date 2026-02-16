@@ -1,0 +1,28 @@
+{
+  "name": "frequentist",
+  "ui": {
+    "validation_methods": [
+      "kfold_cv",
+      "bootstrap",
+      "none"
+    ],
+    "metrics": [
+      "rmse_log",
+      "rmse_raw",
+      "mae",
+      "r2"
+    ],
+    "information_criteria": [
+      "AIC",
+      "BIC",
+      "none"
+    ]
+  },
+  "prohibitions": [
+    "Do not interpret a 95% confidence interval as a 95% probability statement about the parameter."
+  ],
+  "required_reporting": [
+    "Define what a confidence interval means in repeated sampling terms.",
+    "Report effect sizes with confidence intervals, not p-values alone."
+  ]
+}

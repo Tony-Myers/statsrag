@@ -1,0 +1,10 @@
+{
+  "name": "constructivist",
+  "prohibitions": [
+    "Do not present measurement/model outputs as context-free facts."
+  ],
+  "required_reporting": [
+    "Describe how constructs/measurement choices shape what can be inferred.",
+    "Discuss alternative operationalisations where relevant."
+  ]
+}

@@ -1,0 +1,11 @@
+{
+  "name": "realist",
+  "prohibitions": [
+    "Do not claim causal effects unless a causal identification strategy is specified.",
+    "Do not treat model fit as proof of truth."
+  ],
+  "required_reporting": [
+    "State the estimand(s) or predictive target in plain language.",
+    "State model assumptions and limitations."
+  ]
+}

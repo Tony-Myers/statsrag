@@ -1,0 +1,11 @@
+{
+  "include_folders": [
+    "Bayesian",
+    "Domain_specific_modelling",
+    "Interpretation_guardrails",
+    "Modelling_practice_and_diagnostics",
+    "Philosophy",
+    "Prediction_modelling_workflow"
+  ],
+  "include_files": []
+}

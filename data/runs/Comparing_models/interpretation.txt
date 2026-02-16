@@ -1,0 +1,47 @@
+
+STATISTICAL ANALYSIS INTERPRETATION
+
+ESTIMAND AND PREDICTIVE TARGET:
+We aim to predict oxygen consumption (vo2_l_min) on the log scale using body composition, 
+demographic, and age-related variables. The target is the expected log(vo2_l_min) conditional 
+on the predictors.
+
+BEST MODEL (Model_1):
+log(vo2_l_min) ~ Lnmasskg + bodyfat + Sex + Age2
+
+This model had the lowest AIC (-2077.4) and lowest cross-validated RMSE on the log scale (0.186).
+
+EFFECT SIZES WITH 95% CONFIDENCE INTERVALS:
+- Lnmasskg: 0.636 (95% CI: 0.595, 0.678) - A 1-unit increase in log body mass (kg) is associated 
+  with a 0.636 increase in log(vo2_l_min).
+- bodyfat: -0.012 (95% CI: -0.013, -0.011) - Each 1% increase in body fat is associated with 
+  a 0.012 decrease in log(vo2_l_min).
+- SexMale: 0.235 (95% CI: 0.215, 0.255) - Males have on average 0.235 higher log(vo2_l_min) 
+  than females.
+- Age2: -0.000098 (95% CI: -0.000103, -0.000094) - Each unit increase in age-squared is 
+  associated with a 0.000098 decrease in log(vo2_l_min).
+
+CONFIDENCE INTERVAL INTERPRETATION:
+The 95% confidence intervals represent the range of values that would contain the true parameter 
+in 95% of repeated samples from the same population, assuming the model is correctly specified. 
+This is NOT a probability statement about the parameter itself.
+
+MODEL ASSUMPTIONS:
+- Linear relationship between predictors and log(vo2_l_min)
+- Independent observations
+- Normally distributed residuals with constant variance
+- No measurement error in predictors
+
+LIMITATIONS:
+- This is a predictive model; we make no causal claims about the relationships.
+- Model fit does not prove the model is true or that these are the only relevant predictors.
+- Predictions are valid only within the range of observed predictor values.
+- Cross-validated R² of 0.706 indicates ~70% of variance explained, but ~30% remains unexplained.
+- Residual diagnostics should be examined for violations of assumptions.
+
+PERFORMANCE METRICS (10-fold CV):
+- RMSE (log scale): 0.186
+- RMSE (raw scale): 0.492 L/min
+- MAE: 0.375 L/min
+- R²: 0.706
+

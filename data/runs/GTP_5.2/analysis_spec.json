@@ -1,0 +1,56 @@
+{
+  "name": "analysis",
+  "objective": "prediction",
+  "outcome": "vo2_l_min",
+  "predictors": [
+    "testdate",
+    "Sex",
+    "bodyfat",
+    "Lnmasskg",
+    "LnFFFkg",
+    "Age2"
+  ],
+  "candidate_models": [
+    "log(vo2_l_min) ~ Lnmasskg + bodyfat + Sex + Age2",
+    "log(vo2_l_min) ~ LnFFFkg + bodyfat + Sex + Age2",
+    "log(vo2_l_min) ~ LnFFFkg + Sex + Age2"
+  ],
+  "transformations": {
+    "log_outcome": true,
+    "log_predictors": [],
+    "no_transform": []
+  },
+  "validation": {
+    "method": "kfold_cv",
+    "k": 10,
+    "seed": 20260203,
+    "metric": "rmse_log"
+  },
+  "information_criterion": "AIC",
+  "prohibitions": [
+    "Do not claim causal effects unless a causal identification strategy is specified.",
+    "Do not treat model fit as proof of truth.",
+    "Do not interpret a 95% confidence interval as a 95% probability statement about the parameter."
+  ],
+  "required_reporting": [
+    "State the estimand(s) or predictive target in plain language.",
+    "State model assumptions and limitations.",
+    "Define what a confidence interval means in repeated sampling terms.",
+    "Report effect sizes with confidence intervals, not p-values alone."
+  ],
+  "notes": {
+    "framework": {
+      "philosophy": "realist",
+      "probability": "frequentist",
+      "bayesian_aim": ""
+    },
+    "project_brief": "",
+    "model_aliases": {},
+    "modeling": {
+      "outcome_type": "continuous",
+      "outcome_transform": "log",
+      "random_intercept": ""
+    },
+    "priors": {}
+  }
+}

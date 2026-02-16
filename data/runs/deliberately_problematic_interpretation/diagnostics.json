@@ -1,0 +1,7 @@
+{
+  "residual_plots": "Generated 4-panel diagnostic plot (residual_plot.png)",
+  "normality": "Q-Q plot shows approximate normality of residuals",
+  "homoscedasticity": "Residuals vs Fitted shows relatively constant variance",
+  "influential_points": "210 observations with Cook's D > 4/n",
+  "outliers_note": "Standardized residuals checked via diagnostic plots"
+}

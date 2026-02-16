@@ -1,0 +1,28 @@
+{
+  "name": "hybrid",
+  "ui": {
+    "validation_methods": [
+      "kfold_cv",
+      "bootstrap",
+      "psis_loo",
+      "none"
+    ],
+    "metrics": [
+      "rmse_log",
+      "rmse_raw",
+      "mae",
+      "elpd_loo",
+      "looic"
+    ],
+    "information_criteria": [
+      "AIC",
+      "BIC",
+      "LOO",
+      "none"
+    ]
+  },
+  "prohibitions": [],
+  "required_reporting": [
+    "Clearly label which quantities are frequentist vs Bayesian and avoid mixing interpretations."
+  ]
+}
