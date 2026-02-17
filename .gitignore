@@ -1,0 +1,8 @@
+.DS_Store
+**/.DS_Store
+__MACOSX/
+*.zip
+
+# Local data, indexes, and runs should never be committed
+data/**
+!data/.gitkeep
