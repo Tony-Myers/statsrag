@@ -9,7 +9,7 @@ A small local app to:
 6) generate a verification report (RAG-assisted) to flag potential errors/overclaims.
 
 ## Key design choices
-- **No prefilled VO2 variables/models** by default.
+- **No prefilled variables/models** by default.
 - **Dataset-driven variable selection**: upload CSV/XLSX/XLS, then pick outcome/predictors from detected columns.
 - **Framework-aware metrics**: Bayesian mode offers PSIS-LOO / WAIC options; frequentist mode offers AIC/BIC and CV RMSE/MAE/R².
 - **Local sources stay local**: put PDFs/notes under `./data/sources/` on your machine. The repo ignores `data/` so you do not accidentally commit copyrighted material.
