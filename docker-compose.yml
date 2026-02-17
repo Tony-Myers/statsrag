@@ -1,8 +1,6 @@
 services:
   statsrag:
-    build:
-      context: .
-      dockerfile: Dockerfile
+    image: ghcr.io/tony-myers/statsrag:0.3.16
     ports:
       - "8501:8501"
     volumes:
