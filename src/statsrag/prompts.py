@@ -990,8 +990,37 @@ def _group_comparison_prompt(spec: AnalysisSpec, prob: str) -> List[str]:
             )
         lines.append("")
 
-    # Reporting requirements
-    lines.append("### Reporting requirements for this comparison")
+    # Output requirements
+    lines.append("## Output requirements (MUST produce these files)")
+    lines.append(
+        "1) test_results.csv: one row per test; include columns: "
+        "test_name, statistic, df, "
+        + ("bf10, bf01, " if prob == "bayesian" else "p_value, ")
+        + f"effect_size_type, effect_size, es_lower, es_upper, "
+        f"n_group1, n_group2."
+    )
+    lines.append(
+        "2) descriptive_stats.csv: one row per group; include columns: "
+        "group, n, mean, sd, median, min, max."
+    )
+    lines.append(
+        "3) diagnostics.json: include key assumption checks "
+        "(normality test per group: Shapiro-Wilk W and p; "
+        "equality of variance: Levene/Brown-Forsythe F and p; "
+        "outlier notes if any)."
+    )
+    lines.append(
+        "4) interpretation.txt: your interpretation in plain language, "
+        "constrained by the prohibitions below. "
+        "Include: sample sizes, descriptive stats, test result, "
+        f"{'Bayes factor or posterior summary' if prob == 'bayesian' else 'exact p-value'}, "
+        f"effect size ({_es_labels.get(effect_size, effect_size)}) with interval, "
+        "and assumption-check results."
+    )
+    lines.append("")
+
+    # Reporting checklist
+    lines.append("### Reporting checklist (all items must appear in interpretation.txt)")
     lines.append("1. State the sample size per group.")
     lines.append("2. Report descriptive statistics (mean, SD) per group.")
     lines.append("3. Report the test statistic and its degrees of freedom.")
@@ -1085,8 +1114,36 @@ def _correlation_prompt(spec: AnalysisSpec, prob: str) -> List[str]:
             )
         lines.append("")
 
-    # Reporting requirements
-    lines.append("### Reporting requirements for this correlation")
+    # Output requirements
+    lines.append("## Output requirements (MUST produce these files)")
+    _var_list = ", ".join(f"`{v}`" for v in variables) if variables else "`<predictor>`"
+    lines.append(
+        "1) correlation_results.csv: one row per variable pair; include columns: "
+        "var1, var2, method, coefficient, "
+        + ("bf10, " if prob == "bayesian" else "p_value, ")
+        + "ci_lower, ci_upper, "
+        + ("interval_type (CrI), " if prob == "bayesian" else "interval_type (CI), ")
+        + "r_squared, n_pairs"
+        + (", partial_vars" if partial else "")
+        + "."
+    )
+    lines.append(
+        "2) diagnostics.json: include key checks "
+        "(scatterplot summary per pair; outlier notes if any; "
+        "normality assessment if Pearson)."
+    )
+    lines.append(
+        "3) interpretation.txt: your interpretation in plain language, "
+        "constrained by the prohibitions below. "
+        "Include: N, correlation coefficient, "
+        f"{'Bayes factor or credible interval' if prob == 'bayesian' else '95% CI and exact p-value'}, "
+        "R² for Pearson r, and an explicit statement that correlation "
+        "does not imply causation."
+    )
+    lines.append("")
+
+    # Reporting checklist
+    lines.append("### Reporting checklist (all items must appear in interpretation.txt)")
     lines.append("1. Report N (the number of complete pairs).")
     lines.append(f"2. Report the correlation coefficient ({method} r/ρ/τ).")
     if prob == "bayesian":

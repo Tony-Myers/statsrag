@@ -199,6 +199,13 @@ if "spec" not in st.session_state:
     st.session_state.spec = None
 if "last_report" not in st.session_state:
     st.session_state.last_report = ""
+# Dataset caching (survives step navigation)
+if "_dataset_bytes" not in st.session_state:
+    st.session_state["_dataset_bytes"] = None
+if "_dataset_name" not in st.session_state:
+    st.session_state["_dataset_name"] = ""
+if "_dataset_columns" not in st.session_state:
+    st.session_state["_dataset_columns"] = []
 
 
 if step.startswith("1"):
@@ -228,12 +235,38 @@ elif step.startswith("2"):
     uploaded = st.file_uploader(
         "Upload a dataset to populate variables (CSV / XLSX / XLS)",
         type=["csv", "xlsx", "xls"],
-        help="The app lists columns so you can select outcome/predictors without typing.",
+        key="dataset_uploader",
+        help="The app lists columns so you can select outcome/predictors without typing. "
+             "Your dataset is retained if you navigate away and return.",
     )
-    columns = _read_columns_from_upload(uploaded)
-    if uploaded is not None and columns:
-        st.success(f"Detected {len(columns)} columns.")
+
+    # Cache new upload into session state
+    if uploaded is not None:
+        _new_bytes = uploaded.read()
+        uploaded.seek(0)
+        st.session_state["_dataset_bytes"] = _new_bytes
+        st.session_state["_dataset_name"] = uploaded.name
+        columns = _read_columns_from_upload(uploaded)
+        st.session_state["_dataset_columns"] = columns
+    else:
+        # Restore from cache if available
+        columns = st.session_state.get("_dataset_columns", [])
+
+    _has_dataset = bool(columns)
+
+    if _has_dataset:
+        _ds_name = st.session_state.get("_dataset_name", "")
+        _is_cached = uploaded is None and st.session_state.get("_dataset_bytes") is not None
+        _status = f"Detected {len(columns)} columns"
+        if _is_cached:
+            _status += f" (retained from earlier upload: {_ds_name})"
+        st.success(_status)
         st.caption(", ".join(columns[:30]) + (" ..." if len(columns) > 30 else ""))
+        if st.button("Clear dataset", help="Remove the cached dataset and start fresh."):
+            st.session_state["_dataset_bytes"] = None
+            st.session_state["_dataset_name"] = ""
+            st.session_state["_dataset_columns"] = []
+            st.rerun()
 
     st.info("Changes on this page are not saved until you click **Create spec** at the bottom.")
 
@@ -242,7 +275,7 @@ elif step.startswith("2"):
     name = st.text_input("Spec name", value="analysis", key="spec_name")
     objective = st.selectbox("Objective", ["prediction", "explanation", "both"], index=0, key="objective")
 
-    if columns:
+    if _has_dataset:
         outcome = st.selectbox("Outcome column", columns, index=0, key="outcome")
         available_preds = [c for c in columns if c != outcome]
         predictors_sel = st.multiselect(
@@ -1602,7 +1635,38 @@ elif step.startswith("2"):
 
 elif step.startswith("3"):
     st.subheader("3) Sources → build/refresh index")
-    st.write(f"Put your sources into: `{SOURCES_DIR}` (mounted from `./data/sources`).")
+
+    # --- Upload source files directly ---
+    st.write("**Add source files** — drag and drop PDFs, text files, or Markdown here:")
+    _source_uploads = st.file_uploader(
+        "Upload sources (PDF / TXT / MD)",
+        type=["pdf", "txt", "md"],
+        accept_multiple_files=True,
+        key="source_file_upload",
+        help="Files are saved to the sources folder inside this app's data directory.",
+    )
+    if _source_uploads:
+        _subfolder_name = st.text_input(
+            "Save into subfolder (optional — leave blank for root)",
+            value="",
+            key="source_subfolder",
+            help="e.g. 'interpretation_guardrails' or 'modelling_practice'. Created automatically if it doesn't exist.",
+        )
+        if st.button("Save uploaded sources"):
+            _target = SOURCES_DIR / _subfolder_name.strip() if _subfolder_name.strip() else SOURCES_DIR
+            _target.mkdir(parents=True, exist_ok=True)
+            _saved = 0
+            for _uf in _source_uploads:
+                _dest = _target / _uf.name
+                _dest.write_bytes(_uf.read())
+                _uf.seek(0)
+                _saved += 1
+            st.success(f"Saved {_saved} file(s) to `{_target.relative_to(DATA_DIR)}`.")
+            st.info("Now click **Build / rebuild index** below to include them.")
+
+    st.divider()
+
+    st.write(f"Sources directory: `{SOURCES_DIR}` (mounted from `./data/sources`).")
     st.write(f"Index output: `{INDEX_DIR}` (mounted from `./data/index`).")
 
     # --- Index status ---
@@ -1743,6 +1807,8 @@ elif step.startswith("5"):
     if st.session_state.spec is None:
         st.warning("Create a spec first (Step 2).")
     else:
+        _analysis_type = str((st.session_state.spec.notes or {}).get("analysis_type", "regression")).strip().lower()
+
         run_id = st.text_input("Run ID (blank = auto)", value="")
         if not run_id.strip():
             run_id = str(uuid.uuid4())[:8]
@@ -1750,51 +1816,107 @@ elif step.startswith("5"):
         run_dir.mkdir(parents=True, exist_ok=True)
 
         # Initialise session-state caches for uploaded file bytes
-        for _key in ["_up_comp", "_up_coeff", "_up_diags", "_up_interp", "_up_spec_file"]:
+        _upload_keys = [
+            "_up_comp", "_up_coeff", "_up_diags", "_up_interp", "_up_spec_file",
+            "_up_test_results", "_up_desc_stats", "_up_corr_results",
+        ]
+        for _key in _upload_keys:
             if _key not in st.session_state:
                 st.session_state[_key] = None
 
-        col1, col2 = st.columns(2)
-        with col1:
-            comp = st.file_uploader("model_comparison.csv", type=["csv"])
-            coeff = st.file_uploader("model_coefficients.csv", type=["csv"])
-            diags = st.file_uploader("diagnostics.json", type=["json"])
-        with col2:
-            interp = st.file_uploader("LLM interpretation (txt)", type=None)
-            spec_file = st.file_uploader("analysis_spec.json (optional override)", type=["json"])
+        # --- Analysis-type-specific upload fields ---
+        if _analysis_type == "group_comparison":
+            st.info("**Group comparison** — upload the output files from your LLM analysis.")
+            col1, col2 = st.columns(2)
+            with col1:
+                _f_test = st.file_uploader("test_results.csv", type=["csv"], key="up_test_results")
+                _f_desc = st.file_uploader("descriptive_stats.csv", type=["csv"], key="up_desc_stats")
+                diags = st.file_uploader("diagnostics.json", type=["json"], key="up_diags_gc")
+            with col2:
+                interp = st.file_uploader("interpretation.txt", type=None, key="up_interp_gc")
+                spec_file = st.file_uploader("analysis_spec.json (optional override)", type=["json"], key="up_spec_gc")
 
-        # Persist bytes into session state on each new upload
-        if comp is not None:
-            st.session_state["_up_comp"] = comp.read()
-            comp.seek(0)
-        if coeff is not None:
-            st.session_state["_up_coeff"] = coeff.read()
-            coeff.seek(0)
-        if diags is not None:
-            st.session_state["_up_diags"] = diags.read()
-            diags.seek(0)
-        if interp is not None:
-            st.session_state["_up_interp"] = interp.read()
-            interp.seek(0)
-        if spec_file is not None:
-            st.session_state["_up_spec_file"] = spec_file.read()
-            spec_file.seek(0)
+            if _f_test is not None:
+                st.session_state["_up_test_results"] = _f_test.read(); _f_test.seek(0)
+            if _f_desc is not None:
+                st.session_state["_up_desc_stats"] = _f_desc.read(); _f_desc.seek(0)
+            if diags is not None:
+                st.session_state["_up_diags"] = diags.read(); diags.seek(0)
+            if interp is not None:
+                st.session_state["_up_interp"] = interp.read(); interp.seek(0)
+            if spec_file is not None:
+                st.session_state["_up_spec_file"] = spec_file.read(); spec_file.seek(0)
+
+            cached = [
+                ("test_results.csv", "_up_test_results"),
+                ("descriptive_stats.csv", "_up_desc_stats"),
+                ("diagnostics.json", "_up_diags"),
+                ("interpretation.txt", "_up_interp"),
+                ("analysis_spec.json", "_up_spec_file"),
+            ]
+
+        elif _analysis_type == "correlation":
+            st.info("**Correlation analysis** — upload the output files from your LLM analysis.")
+            col1, col2 = st.columns(2)
+            with col1:
+                _f_corr = st.file_uploader("correlation_results.csv", type=["csv"], key="up_corr_results")
+                diags = st.file_uploader("diagnostics.json", type=["json"], key="up_diags_corr")
+            with col2:
+                interp = st.file_uploader("interpretation.txt", type=None, key="up_interp_corr")
+                spec_file = st.file_uploader("analysis_spec.json (optional override)", type=["json"], key="up_spec_corr")
+
+            if _f_corr is not None:
+                st.session_state["_up_corr_results"] = _f_corr.read(); _f_corr.seek(0)
+            if diags is not None:
+                st.session_state["_up_diags"] = diags.read(); diags.seek(0)
+            if interp is not None:
+                st.session_state["_up_interp"] = interp.read(); interp.seek(0)
+            if spec_file is not None:
+                st.session_state["_up_spec_file"] = spec_file.read(); spec_file.seek(0)
+
+            cached = [
+                ("correlation_results.csv", "_up_corr_results"),
+                ("diagnostics.json", "_up_diags"),
+                ("interpretation.txt", "_up_interp"),
+                ("analysis_spec.json", "_up_spec_file"),
+            ]
+
+        else:
+            # Regression / modelling (default)
+            col1, col2 = st.columns(2)
+            with col1:
+                comp = st.file_uploader("model_comparison.csv", type=["csv"])
+                coeff = st.file_uploader("model_coefficients.csv", type=["csv"])
+                diags = st.file_uploader("diagnostics.json", type=["json"])
+            with col2:
+                interp = st.file_uploader("LLM interpretation (txt)", type=None)
+                spec_file = st.file_uploader("analysis_spec.json (optional override)", type=["json"])
+
+            if comp is not None:
+                st.session_state["_up_comp"] = comp.read(); comp.seek(0)
+            if coeff is not None:
+                st.session_state["_up_coeff"] = coeff.read(); coeff.seek(0)
+            if diags is not None:
+                st.session_state["_up_diags"] = diags.read(); diags.seek(0)
+            if interp is not None:
+                st.session_state["_up_interp"] = interp.read(); interp.seek(0)
+            if spec_file is not None:
+                st.session_state["_up_spec_file"] = spec_file.read(); spec_file.seek(0)
+
+            cached = [
+                ("model_comparison.csv", "_up_comp"),
+                ("model_coefficients.csv", "_up_coeff"),
+                ("diagnostics.json", "_up_diags"),
+                ("interpretation.txt", "_up_interp"),
+                ("analysis_spec.json", "_up_spec_file"),
+            ]
 
         # Show what is currently held (uploaded or cached)
-        cached = [
-            ("model_comparison.csv", "_up_comp"),
-            ("model_coefficients.csv", "_up_coeff"),
-            ("diagnostics.json", "_up_diags"),
-            ("interpretation.txt", "_up_interp"),
-            ("analysis_spec.json", "_up_spec_file"),
-        ]
         held = [label for label, key in cached if st.session_state.get(key) is not None]
         if held:
             st.info("Staged (retained across steps): " + ", ".join(held))
 
         if st.button("Save uploads"):
-            _comp_bytes = st.session_state.get("_up_comp")
-            _coeff_bytes = st.session_state.get("_up_coeff")
             _diags_bytes = st.session_state.get("_up_diags")
             _interp_bytes = st.session_state.get("_up_interp")
             _spec_bytes = st.session_state.get("_up_spec_file")
@@ -1814,10 +1936,27 @@ elif step.startswith("5"):
             if brief:
                 (run_dir / "project_brief.md").write_text(brief + "\n", encoding="utf-8")
 
-            if _comp_bytes:
-                (run_dir / "model_comparison.csv").write_bytes(_comp_bytes)
-            if _coeff_bytes:
-                (run_dir / "model_coefficients.csv").write_bytes(_coeff_bytes)
+            # Save analysis-type-specific files
+            if _analysis_type == "group_comparison":
+                _test_bytes = st.session_state.get("_up_test_results")
+                _desc_bytes = st.session_state.get("_up_desc_stats")
+                if _test_bytes:
+                    (run_dir / "test_results.csv").write_bytes(_test_bytes)
+                if _desc_bytes:
+                    (run_dir / "descriptive_stats.csv").write_bytes(_desc_bytes)
+            elif _analysis_type == "correlation":
+                _corr_bytes = st.session_state.get("_up_corr_results")
+                if _corr_bytes:
+                    (run_dir / "correlation_results.csv").write_bytes(_corr_bytes)
+            else:
+                _comp_bytes = st.session_state.get("_up_comp")
+                _coeff_bytes = st.session_state.get("_up_coeff")
+                if _comp_bytes:
+                    (run_dir / "model_comparison.csv").write_bytes(_comp_bytes)
+                if _coeff_bytes:
+                    (run_dir / "model_coefficients.csv").write_bytes(_coeff_bytes)
+
+            # Common files (all analysis types)
             if _diags_bytes:
                 (run_dir / "diagnostics.json").write_bytes(_diags_bytes)
             if _interp_bytes:

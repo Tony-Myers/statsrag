@@ -1438,9 +1438,20 @@ def build_report(
         lines.append("")
 
     _t_analysis = time.monotonic()
+    _analysis_type = str((spec.notes or {}).get("analysis_type", "regression")).strip().lower()
+
     lines.append("## Artefact checks")
-    lines.append(f"- model_comparison.csv present: {'YES' if comp is not None else 'NO'}")
-    lines.append(f"- model_coefficients.csv present: {'YES' if coefs is not None else 'NO'}")
+    if _analysis_type == "group_comparison":
+        _test_path = run_dir / "test_results.csv"
+        _desc_path = run_dir / "descriptive_stats.csv"
+        lines.append(f"- test_results.csv present: {'YES' if _test_path.exists() else 'NO'}")
+        lines.append(f"- descriptive_stats.csv present: {'YES' if _desc_path.exists() else 'NO'}")
+    elif _analysis_type == "correlation":
+        _corr_path = run_dir / "correlation_results.csv"
+        lines.append(f"- correlation_results.csv present: {'YES' if _corr_path.exists() else 'NO'}")
+    else:
+        lines.append(f"- model_comparison.csv present: {'YES' if comp is not None else 'NO'}")
+        lines.append(f"- model_coefficients.csv present: {'YES' if coefs is not None else 'NO'}")
     lines.append(f"- diagnostics.json present: {'YES' if diags is not None else 'NO'}")
     lines.append(f"- interpretation.txt present: {'YES' if bool((interpretation or '').strip()) else 'NO'}\n")
 
@@ -1448,7 +1459,14 @@ def build_report(
     # -------------------------
     # Ground truth summary (computed from model_comparison.csv)
     # -------------------------
-    if best_models:
+    if _analysis_type in ("group_comparison", "correlation"):
+        # No model comparison table for these analysis types
+        lines.append("## Ground truth summary (auto-generated)")
+        lines.append(
+            f"(Analysis type: **{_analysis_type.replace('_', ' ')}** — "
+            f"model comparison table is not applicable.)\n"
+        )
+    elif best_models:
         lines.append("## Ground truth summary (auto-generated)")
         lines.append("Computed directly from **model_comparison.csv** (not from the LLM).\n")
         lines.append("| Criterion | Best model | Formula | Value |")
@@ -1720,5 +1738,4 @@ def build_report(
         pass
 
     return "\n".join(lines)
-
 
