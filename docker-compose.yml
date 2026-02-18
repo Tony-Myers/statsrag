@@ -1,6 +1,6 @@
 services:
   statsrag:
-    image: ghcr.io/tony-myers/statsrag:0.3.19
+    image: ghcr.io/tony-myers/statsrag:0.3.20
     ports:
       - "8501:8501"
     volumes:
