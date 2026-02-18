@@ -13,3 +13,7 @@ dist/
 !data/runs/.gitkeep
 !data/sources/.gitkeep
 !data/models/.gitkeep
+!data/index/.gitkeep
+!data/runs/.gitkeep
+!data/sources/.gitkeep
+!data/models/.gitkeep
