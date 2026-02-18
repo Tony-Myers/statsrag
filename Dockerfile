@@ -8,7 +8,7 @@ COPY src ./src
 COPY docs ./docs
 
 RUN pip install --no-cache-dir -U pip \
- && pip install --no-cache-dir -e .
+ && pip install --no-cache-dir -e ".[excel,embeddings]"
 
 EXPOSE 8501
 CMD ["streamlit", "run", "/app/src/statsrag/ui_app.py", "--server.address=0.0.0.0", "--server.port=8501"]
