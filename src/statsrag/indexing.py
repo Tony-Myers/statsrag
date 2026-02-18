@@ -1,22 +1,56 @@
+"""Source indexing: TF-IDF (always available) + sentence-transformers (optional).
+
+The backend is chosen at index time. If sentence-transformers is installed,
+the UI offers both; otherwise TF-IDF is used automatically. The manifest
+records which backend was used, and query() dispatches accordingly.
+"""
+
 from __future__ import annotations
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import lru_cache as _lru_cache
 from pathlib import Path
-from typing import List, Tuple
-import re, json
+from typing import List, Tuple, Optional, Any
+import re, json, logging
+import numpy as np
 import joblib
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 
+log = logging.getLogger(__name__)
+
 SKIP_FILENAMES = {".DS_Store", ".gitkeep"}
+
+# ── Sentence-transformers availability ──
+try:
+    from sentence_transformers import SentenceTransformer
+    EMBEDDINGS_AVAILABLE = True
+except ImportError:
+    SentenceTransformer = None  # type: ignore[misc, assignment]
+    EMBEDDINGS_AVAILABLE = False
+
+# ── pypdf availability ──
+try:
+    from pypdf import PdfReader
+    PYPDF_AVAILABLE = True
+except Exception:
+    PdfReader = None  # type: ignore[misc, assignment]
+    PYPDF_AVAILABLE = False
+
+# ── Default embedding model ──
+DEFAULT_EMBED_MODEL = "all-MiniLM-L6-v2"
+
+CHUNK_CHARS = 1800
+CHUNK_OVERLAP = 250
+
+
+# ================================================================
+# File reading helpers
+# ================================================================
 
 def _should_skip_file(path: Path) -> bool:
     name = path.name
-    if name in SKIP_FILENAMES:
+    if name in SKIP_FILENAMES or name.startswith("."):
         return True
-    if name.startswith("."):
-        return True
-    # skip empty files (often placeholder markers)
     try:
         if path.is_file() and path.stat().st_size == 0:
             return True
@@ -24,15 +58,6 @@ def _should_skip_file(path: Path) -> bool:
         pass
     return False
 
-try:
-    from pypdf import PdfReader
-    PYPDF_AVAILABLE = True
-except Exception:
-    PdfReader = None
-    PYPDF_AVAILABLE = False
-
-CHUNK_CHARS = 1800
-CHUNK_OVERLAP = 250
 
 def _read_text(path: Path) -> str:
     suffix = path.suffix.lower()
@@ -43,24 +68,21 @@ def _read_text(path: Path) -> str:
             return ""
         try:
             reader = PdfReader(str(path))
-            parts = []
-            for page in reader.pages:
-                txt = page.extract_text() or ""
-                parts.append(txt)
-            return "\n".join(parts)
+            return "\n".join(page.extract_text() or "" for page in reader.pages)
         except Exception:
             return ""
     return ""
 
+
 def _clean(s: str) -> str:
-    s = re.sub(r"\s+", " ", s)
-    return s.strip()
+    return re.sub(r"\s+", " ", s).strip()
+
 
 def _chunk(text: str) -> List[str]:
     text = text.strip()
     if not text:
         return []
-    chunks = []
+    chunks: List[str] = []
     i = 0
     while i < len(text):
         j = min(len(text), i + CHUNK_CHARS)
@@ -72,30 +94,90 @@ def _chunk(text: str) -> List[str]:
             break
     return chunks
 
+
+# ================================================================
+# Index bundle — supports both backends
+# ================================================================
+
 @dataclass
 class IndexBundle:
-    vectorizer: TfidfVectorizer
-    matrix: any
-    meta: List[dict]
+    """Holds a searchable index of source chunks.
 
-def ingest_sources(sources_dir: Path, index_dir: Path, include_paths: list[Path] | None = None) -> int:
-    # Invalidate caches when rebuilding the index
+    backend == "tfidf":
+        vectorizer: TfidfVectorizer, matrix: sparse CSR
+    backend == "embedding":
+        embeddings: np.ndarray (n_chunks x dim), model_name: str
+    """
+    backend: str = "tfidf"
+    # TF-IDF fields
+    vectorizer: Any = None
+    matrix: Any = None
+    # Embedding fields
+    embeddings: Any = None      # np.ndarray or None
+    model_name: str = ""
+    # Common
+    meta: List[dict] = field(default_factory=list)
+
+
+# ================================================================
+# Embedding model cache (lazy singleton)
+# ================================================================
+
+@_lru_cache(maxsize=1)
+def _get_embed_model(model_name: str) -> Any:
+    """Load the SentenceTransformer model once per process."""
+    if not EMBEDDINGS_AVAILABLE:
+        raise ImportError("sentence-transformers is not installed.")
+    log.info("Loading embedding model '%s' (first time may download ~80 MB)...", model_name)
+    return SentenceTransformer(model_name)
+
+
+# ================================================================
+# Ingest / build index
+# ================================================================
+
+def ingest_sources(
+    sources_dir: Path,
+    index_dir: Path,
+    include_paths: Optional[list[Path]] = None,
+    backend: str = "auto",
+    embed_model: str = DEFAULT_EMBED_MODEL,
+) -> int:
+    """Build or rebuild the index.
+
+    Parameters
+    ----------
+    backend : str
+        "tfidf" -- always available, keyword matching.
+        "embedding" -- semantic search (requires sentence-transformers).
+        "auto" -- use embeddings if available, else TF-IDF.
+    embed_model : str
+        HuggingFace model name for the embedding backend.
+    """
+    # Invalidate caches
     _load_cached.cache_clear()
     _read_text_cached.cache_clear()
 
-    index_dir.mkdir(parents=True, exist_ok=True)
-    meta = []
-    texts = []
+    # Resolve backend
+    if backend == "auto":
+        backend = "embedding" if EMBEDDINGS_AVAILABLE else "tfidf"
+    if backend == "embedding" and not EMBEDDINGS_AVAILABLE:
+        log.warning("sentence-transformers not installed; falling back to TF-IDF.")
+        backend = "tfidf"
 
-    # Diagnostics: track what happened to each file
-    _diag: dict = {"processed": 0, "skipped_hidden": 0, "skipped_empty_text": 0,
-                    "skipped_unsupported": 0, "skipped_filter": 0,
-                    "pdf_count": 0, "pypdf_available": PYPDF_AVAILABLE}
+    index_dir.mkdir(parents=True, exist_ok=True)
+    meta: List[dict] = []
+    texts: List[str] = []
+
+    _diag: dict = {
+        "processed": 0, "skipped_hidden": 0, "skipped_empty_text": 0,
+        "skipped_unsupported": 0, "skipped_filter": 0,
+        "pdf_count": 0, "pypdf_available": PYPDF_AVAILABLE,
+    }
 
     all_files = [x for x in sources_dir.rglob("*") if x.is_file()]
 
     if include_paths is not None:
-        # None = no filter (all files). [] = nothing selected. [paths] = filter.
         rel_includes: list[Path] = []
         for ip in include_paths:
             try:
@@ -105,27 +187,24 @@ def ingest_sources(sources_dir: Path, index_dir: Path, include_paths: list[Path]
 
         def _allowed(p: Path) -> bool:
             rel = p.relative_to(sources_dir)
-            for inc in rel_includes:
-                # include file exactly, or any file under an included folder
-                if rel == inc or str(rel).startswith(str(inc).rstrip("/") + "/"):
-                    return True
-            return False
+            return any(
+                rel == inc or str(rel).startswith(str(inc).rstrip("/") + "/")
+                for inc in rel_includes
+            )
 
         pre_count = len(all_files)
         all_files = [p for p in all_files if _allowed(p)]
         _diag["skipped_filter"] = pre_count - len(all_files)
 
     for p in sorted(all_files):
-        # Skip hidden/system files and placeholders
-        if p.name.startswith('.') or p.name in {'.DS_Store', '.gitkeep'}:
+        if p.name.startswith('.') or p.name in SKIP_FILENAMES:
             _diag["skipped_hidden"] += 1
             continue
 
         if p.suffix.lower() == ".pdf":
             _diag["pdf_count"] += 1
 
-        raw = _read_text(p)
-        raw = _clean(raw)
+        raw = _clean(_read_text(p))
         if not raw:
             if p.suffix.lower() in (".txt", ".md", ".pdf"):
                 _diag["skipped_empty_text"] += 1
@@ -135,21 +214,50 @@ def ingest_sources(sources_dir: Path, index_dir: Path, include_paths: list[Path]
 
         _diag["processed"] += 1
         for k, ch in enumerate(_chunk(raw)):
-
             texts.append(ch)
             meta.append({"path": str(p.relative_to(sources_dir)), "chunk": k})
-    vectorizer = TfidfVectorizer(stop_words="english", max_features=60000)
-    matrix = vectorizer.fit_transform(texts) if texts else None
-    bundle = IndexBundle(vectorizer=vectorizer, matrix=matrix, meta=meta)
+
+    # -- Build index --
+    if backend == "embedding" and texts:
+        model = _get_embed_model(embed_model)
+        emb = model.encode(texts, show_progress_bar=True, normalize_embeddings=True)
+        bundle = IndexBundle(
+            backend="embedding",
+            embeddings=np.array(emb, dtype=np.float32),
+            model_name=embed_model,
+            meta=meta,
+        )
+    elif texts:
+        vectorizer = TfidfVectorizer(stop_words="english", max_features=60000)
+        matrix = vectorizer.fit_transform(texts)
+        bundle = IndexBundle(
+            backend="tfidf",
+            vectorizer=vectorizer,
+            matrix=matrix,
+            meta=meta,
+        )
+    else:
+        # Empty index
+        bundle = IndexBundle(backend=backend, meta=meta)
+
     joblib.dump(bundle, index_dir / "tfidf_index.joblib")
     (index_dir / "manifest.json").write_text(
-        json.dumps({"n_chunks": len(texts), "diagnostics": _diag}, indent=2),
+        json.dumps({
+            "n_chunks": len(texts),
+            "backend": backend,
+            "model_name": embed_model if backend == "embedding" else "",
+            "diagnostics": _diag,
+        }, indent=2),
         encoding="utf-8",
     )
     return len(texts)
 
+
+# ================================================================
+# Loading
+# ================================================================
+
 def _load(index_dir: Path) -> IndexBundle:
-    """Load the index bundle, using an LRU cache to avoid repeated joblib.load()."""
     return _load_cached(str(index_dir))
 
 
@@ -159,40 +267,73 @@ def _load_cached(index_dir_str: str) -> IndexBundle:
 
 
 def clear_caches() -> None:
-    """Clear all internal caches (index bundle + file text).
-
-    Call after rebuilding the index or when source files change.
-    """
+    """Clear all internal caches."""
     _load_cached.cache_clear()
     _read_text_cached.cache_clear()
 
+
+# ================================================================
+# Query
+# ================================================================
 
 def query(
     index_dir: Path,
     question: str,
     top_k: int = 6,
-    allowed_prefixes: list[str] | None = None,
+    allowed_prefixes: Optional[list[str]] = None,
 ) -> List[Tuple[float, dict]]:
+    """Query the index. Dispatches based on which backend was used at build time."""
     bundle = _load(index_dir)
+
+    if bundle.backend == "embedding":
+        return _query_embedding(bundle, question, top_k, allowed_prefixes)
+    else:
+        return _query_tfidf(bundle, question, top_k, allowed_prefixes)
+
+
+def _query_tfidf(
+    bundle: IndexBundle,
+    question: str,
+    top_k: int,
+    allowed_prefixes: Optional[list[str]],
+) -> List[Tuple[float, dict]]:
     if bundle.matrix is None:
         return []
     qv = bundle.vectorizer.transform([question])
     sims = cosine_similarity(qv, bundle.matrix).ravel()
-    # Optionally filter by allowed path prefixes (e.g. folder names)
+    return _collect_results(sims, bundle.meta, top_k, allowed_prefixes)
+
+
+def _query_embedding(
+    bundle: IndexBundle,
+    question: str,
+    top_k: int,
+    allowed_prefixes: Optional[list[str]],
+) -> List[Tuple[float, dict]]:
+    if bundle.embeddings is None or len(bundle.embeddings) == 0:
+        return []
+    model = _get_embed_model(bundle.model_name)
+    q_emb = model.encode([question], normalize_embeddings=True)
+    sims = cosine_similarity(q_emb, bundle.embeddings).ravel()
+    return _collect_results(sims, bundle.meta, top_k, allowed_prefixes)
+
+
+def _collect_results(
+    sims: np.ndarray,
+    meta: List[dict],
+    top_k: int,
+    allowed_prefixes: Optional[list[str]],
+) -> List[Tuple[float, dict]]:
     ordered = sims.argsort()[::-1]
     out: List[Tuple[float, dict]] = []
     for i in ordered:
-        m = bundle.meta[int(i)]
+        m = meta[int(i)]
         p = m.get("path", "")
         if allowed_prefixes:
-            ok = False
-            for pref in allowed_prefixes:
-                pref = pref.strip().rstrip("/")
-                if not pref:
-                    continue
-                if p == pref or p.startswith(pref + "/"):
-                    ok = True
-                    break
+            ok = any(
+                p == pref.strip().rstrip("/") or p.startswith(pref.strip().rstrip("/") + "/")
+                for pref in allowed_prefixes if pref.strip()
+            )
             if not ok:
                 continue
         out.append((float(sims[i]), m))
@@ -201,29 +342,23 @@ def query(
     return out
 
 
-def get_chunk_text(sources_dir: Path, rel_path: str, chunk_id: int) -> str:
-    """Reconstruct a chunk's text deterministically from the stored source file.
+# ================================================================
+# Chunk text retrieval
+# ================================================================
 
-    Uses an LRU cache so each PDF/text file is only read and parsed once
-    per process lifetime (cleared on index rebuild).
-    """
+def get_chunk_text(sources_dir: Path, rel_path: str, chunk_id: int) -> str:
+    """Reconstruct a chunk's text from the stored source file."""
     try:
-        p = sources_dir / rel_path
-        raw = _read_text_cached(str(p))
+        raw = _read_text_cached(str(sources_dir / rel_path))
         chunks = _chunk(raw)
-        if chunk_id < 0 or chunk_id >= len(chunks):
-            return ""
-        return chunks[chunk_id]
+        if 0 <= chunk_id < len(chunks):
+            return chunks[chunk_id]
+        return ""
     except Exception:
         return ""
 
 
 @_lru_cache(maxsize=256)
 def _read_text_cached(path_str: str) -> str:
-    """Read and clean a source file, caching the result.
-
-    PDF parsing via pypdf is expensive (page-by-page text extraction).
-    This cache ensures each file is read at most once per session.
-    """
     raw = _read_text(Path(path_str))
     return _clean(raw)

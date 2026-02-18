@@ -486,12 +486,21 @@ def _bayesian_prompt(spec: AnalysisSpec) -> List[str]:
         "interval_type (CrI), model_id. "
         "Label intervals as credible intervals (CrI), not confidence intervals."
     )
-    lines.append(
-        "3) diagnostics.json: include key checks "
-        "(posterior convergence: Rhat, ESS; "
-        "PSIS-LOO Pareto-k summary when using LOO; "
-        "posterior predictive check summary)."
-    )
+    if aim == "hypothesis_testing":
+        lines.append(
+            "3) diagnostics.json: include key checks "
+            "(posterior convergence: Rhat, ESS; "
+            "posterior predictive check summary). "
+            "Do NOT include PSIS-LOO or Pareto-k diagnostics — these are "
+            "not applicable when the aim is Bayes-factor hypothesis testing."
+        )
+    else:
+        lines.append(
+            "3) diagnostics.json: include key checks "
+            "(posterior convergence: Rhat, ESS; "
+            "PSIS-LOO Pareto-k summary when using LOO; "
+            "posterior predictive check summary)."
+        )
     lines.append(
         "4) interpretation.txt: your interpretation in plain language, "
         "constrained by the prohibitions below."
@@ -506,7 +515,14 @@ def _bayesian_prompt(spec: AnalysisSpec) -> List[str]:
 
     # --- R implementation guidance (Bayesian) ---
     lines.append("## R implementation guidance (preferred)")
-    lines.append("- Use R with brms (+ loo package for PSIS-LOO) unless the model explicitly indicates INLA.")
+    if aim == "hypothesis_testing":
+        lines.append(
+            "- Use R with brms (+ bridgesampling for Bayes factors). "
+            "Do NOT use the loo package — PSIS-LOO is not appropriate "
+            "when the aim is hypothesis testing via Bayes factors."
+        )
+    else:
+        lines.append("- Use R with brms (+ loo package for PSIS-LOO) unless the model explicitly indicates INLA.")
     lines.append("- State priors explicitly. If using brms defaults, say so.")
     if aim == "hypothesis_testing":
         lines.append(

@@ -9,7 +9,7 @@ from pathlib import Path
 import pandas as pd
 import streamlit as st
 
-from statsrag.indexing import ingest_sources
+from statsrag.indexing import ingest_sources, EMBEDDINGS_AVAILABLE
 from statsrag.profiles import load_profile, merge_profiles
 from statsrag.prompts import julius_prompt_from_spec
 from statsrag.schema import AnalysisSpec, Transformations, Validation
@@ -23,6 +23,167 @@ PROFILES_DIR = Path("/app/docs/profiles")
 
 for d in [SOURCES_DIR, INDEX_DIR, RUNS_DIR]:
     d.mkdir(parents=True, exist_ok=True)
+
+
+# ================================================================
+# Schema-first column mapping
+# ================================================================
+
+# Expected columns for each artefact type, with aliases for auto-matching.
+# Format: {canonical_name: [list_of_common_aliases]}
+
+_SCHEMA_MODEL_COMPARISON = {
+    "model_id": ["model_id", "model", "modelid", "model_number", "id"],
+    "formula": ["formula", "model_formula", "specification", "spec"],
+    "aic": ["aic"],
+    "bic": ["bic"],
+    "looic": ["looic", "loo_ic", "loo"],
+    "waic": ["waic"],
+    "elpd_loo": ["elpd_loo", "elpd", "elpd_diff"],
+    "elpd_waic": ["elpd_waic"],
+    "rmse_log": ["rmse_log", "rmse_log_scale", "log_rmse"],
+    "rmse_raw": ["rmse_raw", "rmse", "root_mean_squared_error"],
+    "mae": ["mae", "mean_absolute_error"],
+    "r2": ["r2", "r_squared", "rsquared"],
+    "bf10": ["bf10", "bf_10", "bayes_factor", "bayesfactor"],
+    "bf01": ["bf01", "bf_01"],
+}
+
+_SCHEMA_MODEL_COEFFICIENTS = {
+    "term": ["term", "predictor", "variable", "parameter", "coef_name", "name"],
+    "estimate": ["estimate", "coef", "coefficient", "beta", "b", "mean", "posterior_mean"],
+    "se": ["se", "std_error", "std.error", "stderr", "sd", "posterior_sd"],
+    "lower": ["lower", "conf.low", "lower_ci", "lower_cri", "q2.5", "2.5%"],
+    "upper": ["upper", "conf.high", "upper_ci", "upper_cri", "q97.5", "97.5%"],
+    "scale": ["scale"],
+    "interval_type": ["interval_type", "interval"],
+    "model_id": ["model_id", "model", "modelid"],
+}
+
+_SCHEMA_TEST_RESULTS = {
+    "test_name": ["test_name", "test", "method"],
+    "statistic": ["statistic", "test_statistic", "t", "u", "w", "z"],
+    "df": ["df", "degrees_of_freedom", "parameter"],
+    "p_value": ["p_value", "p", "pval", "p.value"],
+    "bf10": ["bf10", "bf_10", "bayes_factor"],
+    "bf01": ["bf01", "bf_01"],
+    "effect_size_type": ["effect_size_type", "es_type", "effect_type"],
+    "effect_size": ["effect_size", "es", "d", "cohens_d", "hedges_g", "r"],
+    "es_lower": ["es_lower", "es_ci_lower"],
+    "es_upper": ["es_upper", "es_ci_upper"],
+    "n_group1": ["n_group1", "n1", "n_1"],
+    "n_group2": ["n_group2", "n2", "n_2"],
+}
+
+_SCHEMA_DESCRIPTIVE_STATS = {
+    "group": ["group", "condition", "level", "factor"],
+    "n": ["n", "count", "sample_size"],
+    "mean": ["mean", "avg", "average", "m"],
+    "sd": ["sd", "std", "std_dev", "stdev"],
+    "median": ["median", "mdn"],
+    "min": ["min", "minimum"],
+    "max": ["max", "maximum"],
+}
+
+_SCHEMA_CORRELATION_RESULTS = {
+    "var1": ["var1", "variable1", "x"],
+    "var2": ["var2", "variable2", "y"],
+    "method": ["method", "type"],
+    "coefficient": ["coefficient", "r", "rho", "tau", "cor", "correlation"],
+    "p_value": ["p_value", "p", "pval"],
+    "bf10": ["bf10", "bf_10", "bayes_factor"],
+    "ci_lower": ["ci_lower", "lower", "conf.low"],
+    "ci_upper": ["ci_upper", "upper", "conf.high"],
+    "interval_type": ["interval_type", "interval"],
+    "r_squared": ["r_squared", "r2", "rsquared"],
+    "n_pairs": ["n_pairs", "n", "count"],
+}
+
+
+def _auto_match_columns(
+    uploaded_cols: list[str],
+    schema: dict[str, list[str]],
+) -> dict[str, str]:
+    """Auto-match uploaded column names to canonical names.
+
+    Returns {canonical_name: matched_uploaded_col_or_empty_string}.
+    """
+    mapping: dict[str, str] = {}
+    used: set[str] = set()
+    norm_map = {c.lower().strip().replace(" ", "_"): c for c in uploaded_cols}
+
+    for canonical, aliases in schema.items():
+        matched = ""
+        for alias in aliases:
+            a_norm = alias.lower().strip().replace(" ", "_")
+            if a_norm in norm_map and norm_map[a_norm] not in used:
+                matched = norm_map[a_norm]
+                used.add(matched)
+                break
+        mapping[canonical] = matched
+    return mapping
+
+
+def _schema_mapping_ui(
+    uploaded_bytes: bytes,
+    schema: dict[str, list[str]],
+    required_cols: list[str],
+    file_label: str,
+    widget_prefix: str,
+) -> tuple[bytes | None, dict[str, str]]:
+    """Show column-mapping UI and return (standardized_csv_bytes, mapping_used)."""
+    import io as _io
+
+    try:
+        df = pd.read_csv(_io.BytesIO(uploaded_bytes))
+    except Exception:
+        try:
+            df = pd.read_csv(_io.BytesIO(uploaded_bytes), engine="python")
+        except Exception as e:
+            st.error(f"Could not read CSV: {e}")
+            return None, {}
+
+    uploaded_cols = list(df.columns)
+    auto = _auto_match_columns(uploaded_cols, schema)
+
+    st.caption(f"Detected columns: {', '.join(uploaded_cols)}")
+
+    options = ["(skip)"] + uploaded_cols
+    mapping: dict[str, str] = {}
+
+    n_cols = len(schema)
+    cols_per_row = 3
+    items = list(schema.items())
+
+    for row_start in range(0, n_cols, cols_per_row):
+        row_items = items[row_start:row_start + cols_per_row]
+        ui_cols = st.columns(len(row_items))
+        for col_ui, (canonical, _aliases) in zip(ui_cols, row_items):
+            with col_ui:
+                is_req = canonical in required_cols
+                label = f"**{canonical}**" if is_req else canonical
+                default_val = auto.get(canonical, "")
+                default_idx = options.index(default_val) if default_val in options else 0
+                sel = st.selectbox(
+                    label,
+                    options,
+                    index=default_idx,
+                    key=f"{widget_prefix}_{canonical}",
+                    help="Required" if is_req else "Optional",
+                )
+                mapping[canonical] = sel if sel != "(skip)" else ""
+
+    missing = [c for c in required_cols if not mapping.get(c)]
+    if missing:
+        st.warning(f"Required columns not mapped: {', '.join(missing)}")
+
+    rename = {v: k for k, v in mapping.items() if v}
+    keep = [v for v in mapping.values() if v]
+    df_out = df[keep].rename(columns=rename)
+
+    out_buf = _io.BytesIO()
+    df_out.to_csv(out_buf, index=False)
+    return out_buf.getvalue(), mapping
 
 st.set_page_config(page_title="StatsRAG", layout="wide", page_icon="📊")
 
@@ -1084,7 +1245,15 @@ elif step.startswith("2"):
             pr = load_profile(prob_path_spec)
             prohibitions, required_reporting = merge_profiles(ph, pr)
 
-            pred_list = list(predictors_sel) if columns else [p.strip() for p in predictors_text.split(",") if p.strip()]
+            # Scrub LOO-related requirements when aim is BF hypothesis testing
+            if prob_fw == "bayesian" and bayesian_aim == "hypothesis_testing":
+                _loo_keywords = {"psis-loo", "psis_loo", "pareto-k", "pareto k", "loo diagnostic"}
+                required_reporting = [
+                    r for r in required_reporting
+                    if not any(kw in r.lower() for kw in _loo_keywords)
+                ]
+
+            pred_list = list(predictors_sel) if _has_dataset else [p.strip() for p in predictors_text.split(",") if p.strip()]
 
             if len(pred_list) == 0:
                 st.error("No predictors selected. Add predictors above and click Create spec again.")
@@ -1361,6 +1530,14 @@ elif step.startswith("2"):
             pr = load_profile(prob_path_spec)
             prohibitions, required_reporting = merge_profiles(ph, pr)
 
+            # Scrub LOO-related requirements for group comparisons (BF-based when Bayesian)
+            if prob_fw == "bayesian":
+                _loo_keywords = {"psis-loo", "psis_loo", "pareto-k", "pareto k", "loo diagnostic"}
+                required_reporting = [
+                    r for r in required_reporting
+                    if not any(kw in r.lower() for kw in _loo_keywords)
+                ]
+
             if not outcome.strip():
                 st.error("No outcome variable specified.")
                 st.stop()
@@ -1561,6 +1738,14 @@ elif step.startswith("2"):
             pr = load_profile(prob_path_spec)
             prohibitions, required_reporting = merge_profiles(ph, pr)
 
+            # Scrub LOO-related requirements for correlation (no model comparison)
+            if prob_fw == "bayesian":
+                _loo_keywords = {"psis-loo", "psis_loo", "pareto-k", "pareto k", "loo diagnostic"}
+                required_reporting = [
+                    r for r in required_reporting
+                    if not any(kw in r.lower() for kw in _loo_keywords)
+                ]
+
             if not outcome.strip():
                 st.error("No outcome variable specified.")
                 st.stop()
@@ -1723,6 +1908,22 @@ elif step.startswith("3"):
             include.append(SOURCES_DIR / f)
         return include
 
+    # --- Search backend selector ---
+    if EMBEDDINGS_AVAILABLE:
+        _backend_opts = {"Semantic search (recommended)": "embedding", "Keyword search (TF-IDF)": "tfidf"}
+        _backend_label = st.radio(
+            "Search backend",
+            list(_backend_opts.keys()),
+            index=0,
+            key="index_backend",
+            help="Semantic search understands meaning (e.g. 'epistemic uncertainty' matches 'model confidence'). "
+                 "TF-IDF only matches exact keywords.",
+        )
+        _chosen_backend = _backend_opts[_backend_label]
+    else:
+        _chosen_backend = "tfidf"
+        st.caption("Search backend: TF-IDF (keyword matching). Install `sentence-transformers` for semantic search.")
+
     if st.button("Build / rebuild index"):
         include_paths = _resolve_include_paths()
 
@@ -1737,9 +1938,9 @@ elif step.startswith("3"):
                 f"(e.g. `pip install pypdf`) and rebuild."
             )
 
-        with st.spinner("Indexing sources..."):
+        with st.spinner("Indexing sources..." + (" (first run downloads the embedding model)" if _chosen_backend == "embedding" else "")):
             start = time.time()
-            n = ingest_sources(SOURCES_DIR, INDEX_DIR, include_paths=include_paths)
+            n = ingest_sources(SOURCES_DIR, INDEX_DIR, include_paths=include_paths, backend=_chosen_backend)
             elapsed = time.time() - start
             sel = {"include_folders": sel_folders, "include_files": sel_files}
             try:
@@ -1827,25 +2028,80 @@ elif step.startswith("5"):
         # --- Analysis-type-specific upload fields ---
         if _analysis_type == "group_comparison":
             st.info("**Group comparison** — upload the output files from your LLM analysis.")
-            col1, col2 = st.columns(2)
-            with col1:
-                _f_test = st.file_uploader("test_results.csv", type=["csv"], key="up_test_results")
-                _f_desc = st.file_uploader("descriptive_stats.csv", type=["csv"], key="up_desc_stats")
-                diags = st.file_uploader("diagnostics.json", type=["json"], key="up_diags_gc")
-            with col2:
-                interp = st.file_uploader("interpretation.txt", type=None, key="up_interp_gc")
-                spec_file = st.file_uploader("analysis_spec.json (optional override)", type=["json"], key="up_spec_gc")
+            _upload_mode_gc = st.radio(
+                "Upload mode",
+                ["Standard (named files)", "Flexible (map any CSV)"],
+                index=0,
+                key="upload_mode_gc",
+                horizontal=True,
+            )
 
-            if _f_test is not None:
-                st.session_state["_up_test_results"] = _f_test.read(); _f_test.seek(0)
-            if _f_desc is not None:
-                st.session_state["_up_desc_stats"] = _f_desc.read(); _f_desc.seek(0)
-            if diags is not None:
-                st.session_state["_up_diags"] = diags.read(); diags.seek(0)
-            if interp is not None:
-                st.session_state["_up_interp"] = interp.read(); interp.seek(0)
-            if spec_file is not None:
-                st.session_state["_up_spec_file"] = spec_file.read(); spec_file.seek(0)
+            if _upload_mode_gc.startswith("Standard"):
+                col1, col2 = st.columns(2)
+                with col1:
+                    _f_test = st.file_uploader("test_results.csv", type=["csv"], key="up_test_results")
+                    _f_desc = st.file_uploader("descriptive_stats.csv", type=["csv"], key="up_desc_stats")
+                    diags = st.file_uploader("diagnostics.json", type=["json"], key="up_diags_gc")
+                with col2:
+                    interp = st.file_uploader("interpretation.txt", type=None, key="up_interp_gc")
+                    spec_file = st.file_uploader("analysis_spec.json (optional override)", type=["json"], key="up_spec_gc")
+
+                if _f_test is not None:
+                    st.session_state["_up_test_results"] = _f_test.read(); _f_test.seek(0)
+                if _f_desc is not None:
+                    st.session_state["_up_desc_stats"] = _f_desc.read(); _f_desc.seek(0)
+                if diags is not None:
+                    st.session_state["_up_diags"] = diags.read(); diags.seek(0)
+                if interp is not None:
+                    st.session_state["_up_interp"] = interp.read(); interp.seek(0)
+                if spec_file is not None:
+                    st.session_state["_up_spec_file"] = spec_file.read(); spec_file.seek(0)
+            else:
+                with st.expander("Test results CSV", expanded=True):
+                    _flex_test = st.file_uploader(
+                        "Upload CSV with test results",
+                        type=["csv"], key="flex_test_upload",
+                    )
+                    if _flex_test is not None:
+                        _raw = _flex_test.read(); _flex_test.seek(0)
+                        _std, _map = _schema_mapping_ui(
+                            _raw, _SCHEMA_TEST_RESULTS,
+                            required_cols=["test_name", "statistic"],
+                            file_label="test_results",
+                            widget_prefix="tr",
+                        )
+                        if _std is not None:
+                            st.session_state["_up_test_results"] = _std
+
+                with st.expander("Descriptive statistics CSV", expanded=True):
+                    _flex_desc = st.file_uploader(
+                        "Upload CSV with descriptive stats",
+                        type=["csv"], key="flex_desc_upload",
+                    )
+                    if _flex_desc is not None:
+                        _raw = _flex_desc.read(); _flex_desc.seek(0)
+                        _std, _map = _schema_mapping_ui(
+                            _raw, _SCHEMA_DESCRIPTIVE_STATS,
+                            required_cols=["group", "n", "mean"],
+                            file_label="descriptive_stats",
+                            widget_prefix="ds",
+                        )
+                        if _std is not None:
+                            st.session_state["_up_desc_stats"] = _std
+
+                col1, col2 = st.columns(2)
+                with col1:
+                    diags = st.file_uploader("diagnostics.json", type=["json"], key="flex_diags_gc")
+                with col2:
+                    interp = st.file_uploader("interpretation.txt", type=None, key="flex_interp_gc")
+                    spec_file = st.file_uploader("analysis_spec.json (optional)", type=["json"], key="flex_spec_gc")
+
+                if diags is not None:
+                    st.session_state["_up_diags"] = diags.read(); diags.seek(0)
+                if interp is not None:
+                    st.session_state["_up_interp"] = interp.read(); interp.seek(0)
+                if spec_file is not None:
+                    st.session_state["_up_spec_file"] = spec_file.read(); spec_file.seek(0)
 
             cached = [
                 ("test_results.csv", "_up_test_results"),
@@ -1857,22 +2113,61 @@ elif step.startswith("5"):
 
         elif _analysis_type == "correlation":
             st.info("**Correlation analysis** — upload the output files from your LLM analysis.")
-            col1, col2 = st.columns(2)
-            with col1:
-                _f_corr = st.file_uploader("correlation_results.csv", type=["csv"], key="up_corr_results")
-                diags = st.file_uploader("diagnostics.json", type=["json"], key="up_diags_corr")
-            with col2:
-                interp = st.file_uploader("interpretation.txt", type=None, key="up_interp_corr")
-                spec_file = st.file_uploader("analysis_spec.json (optional override)", type=["json"], key="up_spec_corr")
+            _upload_mode_corr = st.radio(
+                "Upload mode",
+                ["Standard (named files)", "Flexible (map any CSV)"],
+                index=0,
+                key="upload_mode_corr",
+                horizontal=True,
+            )
 
-            if _f_corr is not None:
-                st.session_state["_up_corr_results"] = _f_corr.read(); _f_corr.seek(0)
-            if diags is not None:
-                st.session_state["_up_diags"] = diags.read(); diags.seek(0)
-            if interp is not None:
-                st.session_state["_up_interp"] = interp.read(); interp.seek(0)
-            if spec_file is not None:
-                st.session_state["_up_spec_file"] = spec_file.read(); spec_file.seek(0)
+            if _upload_mode_corr.startswith("Standard"):
+                col1, col2 = st.columns(2)
+                with col1:
+                    _f_corr = st.file_uploader("correlation_results.csv", type=["csv"], key="up_corr_results")
+                    diags = st.file_uploader("diagnostics.json", type=["json"], key="up_diags_corr")
+                with col2:
+                    interp = st.file_uploader("interpretation.txt", type=None, key="up_interp_corr")
+                    spec_file = st.file_uploader("analysis_spec.json (optional override)", type=["json"], key="up_spec_corr")
+
+                if _f_corr is not None:
+                    st.session_state["_up_corr_results"] = _f_corr.read(); _f_corr.seek(0)
+                if diags is not None:
+                    st.session_state["_up_diags"] = diags.read(); diags.seek(0)
+                if interp is not None:
+                    st.session_state["_up_interp"] = interp.read(); interp.seek(0)
+                if spec_file is not None:
+                    st.session_state["_up_spec_file"] = spec_file.read(); spec_file.seek(0)
+            else:
+                with st.expander("Correlation results CSV", expanded=True):
+                    _flex_corr = st.file_uploader(
+                        "Upload CSV with correlation results",
+                        type=["csv"], key="flex_corr_upload",
+                    )
+                    if _flex_corr is not None:
+                        _raw = _flex_corr.read(); _flex_corr.seek(0)
+                        _std, _map = _schema_mapping_ui(
+                            _raw, _SCHEMA_CORRELATION_RESULTS,
+                            required_cols=["var1", "var2", "coefficient"],
+                            file_label="correlation_results",
+                            widget_prefix="cr",
+                        )
+                        if _std is not None:
+                            st.session_state["_up_corr_results"] = _std
+
+                col1, col2 = st.columns(2)
+                with col1:
+                    diags = st.file_uploader("diagnostics.json", type=["json"], key="flex_diags_corr")
+                with col2:
+                    interp = st.file_uploader("interpretation.txt", type=None, key="flex_interp_corr")
+                    spec_file = st.file_uploader("analysis_spec.json (optional)", type=["json"], key="flex_spec_corr")
+
+                if diags is not None:
+                    st.session_state["_up_diags"] = diags.read(); diags.seek(0)
+                if interp is not None:
+                    st.session_state["_up_interp"] = interp.read(); interp.seek(0)
+                if spec_file is not None:
+                    st.session_state["_up_spec_file"] = spec_file.read(); spec_file.seek(0)
 
             cached = [
                 ("correlation_results.csv", "_up_corr_results"),
@@ -1883,25 +2178,87 @@ elif step.startswith("5"):
 
         else:
             # Regression / modelling (default)
-            col1, col2 = st.columns(2)
-            with col1:
-                comp = st.file_uploader("model_comparison.csv", type=["csv"])
-                coeff = st.file_uploader("model_coefficients.csv", type=["csv"])
-                diags = st.file_uploader("diagnostics.json", type=["json"])
-            with col2:
-                interp = st.file_uploader("LLM interpretation (txt)", type=None)
-                spec_file = st.file_uploader("analysis_spec.json (optional override)", type=["json"])
+            _upload_mode = st.radio(
+                "Upload mode",
+                ["Standard (named files)", "Flexible (map any CSV)"],
+                index=0,
+                key="upload_mode_regression",
+                horizontal=True,
+                help="Standard: upload files with exact names. Flexible: upload any CSV and map columns.",
+            )
 
-            if comp is not None:
-                st.session_state["_up_comp"] = comp.read(); comp.seek(0)
-            if coeff is not None:
-                st.session_state["_up_coeff"] = coeff.read(); coeff.seek(0)
-            if diags is not None:
-                st.session_state["_up_diags"] = diags.read(); diags.seek(0)
-            if interp is not None:
-                st.session_state["_up_interp"] = interp.read(); interp.seek(0)
-            if spec_file is not None:
-                st.session_state["_up_spec_file"] = spec_file.read(); spec_file.seek(0)
+            if _upload_mode.startswith("Standard"):
+                col1, col2 = st.columns(2)
+                with col1:
+                    comp = st.file_uploader("model_comparison.csv", type=["csv"])
+                    coeff = st.file_uploader("model_coefficients.csv", type=["csv"])
+                    diags = st.file_uploader("diagnostics.json", type=["json"])
+                with col2:
+                    interp = st.file_uploader("LLM interpretation (txt)", type=None)
+                    spec_file = st.file_uploader("analysis_spec.json (optional override)", type=["json"])
+
+                if comp is not None:
+                    st.session_state["_up_comp"] = comp.read(); comp.seek(0)
+                if coeff is not None:
+                    st.session_state["_up_coeff"] = coeff.read(); coeff.seek(0)
+                if diags is not None:
+                    st.session_state["_up_diags"] = diags.read(); diags.seek(0)
+                if interp is not None:
+                    st.session_state["_up_interp"] = interp.read(); interp.seek(0)
+                if spec_file is not None:
+                    st.session_state["_up_spec_file"] = spec_file.read(); spec_file.seek(0)
+
+            else:
+                # --- Flexible column mapping ---
+                st.info("Upload any CSV files from the LLM and map their columns to the expected format.")
+
+                with st.expander("Model comparison CSV", expanded=True):
+                    _flex_comp = st.file_uploader(
+                        "Upload CSV with model comparison data",
+                        type=["csv"], key="flex_comp_upload",
+                    )
+                    if _flex_comp is not None:
+                        _raw = _flex_comp.read(); _flex_comp.seek(0)
+                        _std, _map = _schema_mapping_ui(
+                            _raw,
+                            _SCHEMA_MODEL_COMPARISON,
+                            required_cols=["model_id"],
+                            file_label="model_comparison",
+                            widget_prefix="mc",
+                        )
+                        if _std is not None:
+                            st.session_state["_up_comp"] = _std
+
+                with st.expander("Model coefficients CSV", expanded=True):
+                    _flex_coeff = st.file_uploader(
+                        "Upload CSV with coefficient/parameter data",
+                        type=["csv"], key="flex_coeff_upload",
+                    )
+                    if _flex_coeff is not None:
+                        _raw = _flex_coeff.read(); _flex_coeff.seek(0)
+                        _std, _map = _schema_mapping_ui(
+                            _raw,
+                            _SCHEMA_MODEL_COEFFICIENTS,
+                            required_cols=["term", "estimate"],
+                            file_label="model_coefficients",
+                            widget_prefix="coef",
+                        )
+                        if _std is not None:
+                            st.session_state["_up_coeff"] = _std
+
+                col1, col2 = st.columns(2)
+                with col1:
+                    diags = st.file_uploader("diagnostics.json", type=["json"], key="flex_diags")
+                with col2:
+                    interp = st.file_uploader("LLM interpretation (txt)", type=None, key="flex_interp")
+                    spec_file = st.file_uploader("analysis_spec.json (optional override)", type=["json"], key="flex_spec")
+
+                if diags is not None:
+                    st.session_state["_up_diags"] = diags.read(); diags.seek(0)
+                if interp is not None:
+                    st.session_state["_up_interp"] = interp.read(); interp.seek(0)
+                if spec_file is not None:
+                    st.session_state["_up_spec_file"] = spec_file.read(); spec_file.seek(0)
 
             cached = [
                 ("model_comparison.csv", "_up_comp"),

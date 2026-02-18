@@ -651,7 +651,7 @@ def _coefficient_direction_flags(coefs: Optional[pd.DataFrame], interpretation: 
                             )
     return flags
 
-def _interpretation_flags(interpretation: str, prob_mode: str) -> list[str]:
+def _interpretation_flags(interpretation: str, prob_mode: str, bayesian_aim: str = "") -> list[str]:
     t = (interpretation or "").lower()
     raw = (interpretation or "").strip()  # preserve original case for quoting
     flags: list[str] = []
@@ -880,16 +880,18 @@ def _interpretation_flags(interpretation: str, prob_mode: str) -> list[str]:
                 "Bayes factor overclaim: Bayes factors compare relative evidence; they do not prove a model is true."
                 + _excerpt(["bayes factor", "true", "proved", "proves"])
             )
-        if re.search(r"\b(highest|largest)\s+(looic|waic)\b", t):
-            flags.append(
-                "Direction error: LOOIC/WAIC are on a deviance scale — lower is better (analogous to AIC)."
-                + _excerpt(["highest looic", "largest looic", "highest waic", "largest waic"])
-            )
-        if re.search(r"\b(smallest|lowest)\s+elpd\b", t):
-            flags.append(
-                "Direction error: ELPD — higher is better. 'Lowest ELPD' indicates the worst predictive performance."
-                + _excerpt(["smallest elpd", "lowest elpd"])
-            )
+        # LOO/WAIC direction checks — skip when aim is hypothesis testing (BF)
+        if bayesian_aim != "hypothesis_testing":
+            if re.search(r"\b(highest|largest)\s+(looic|waic)\b", t):
+                flags.append(
+                    "Direction error: LOOIC/WAIC are on a deviance scale — lower is better (analogous to AIC)."
+                    + _excerpt(["highest looic", "largest looic", "highest waic", "largest waic"])
+                )
+            if re.search(r"\b(smallest|lowest)\s+elpd\b", t):
+                flags.append(
+                    "Direction error: ELPD — higher is better. 'Lowest ELPD' indicates the worst predictive performance."
+                    + _excerpt(["smallest elpd", "lowest elpd"])
+                )
         if re.search(r"\bposterior probability\b", t) and re.search(r"\b(aic|bic)\b", t):
             flags.append(
                 "Framework mixing: posterior probability claims are not supported by AIC/BIC."
@@ -907,14 +909,14 @@ def _interpretation_flags(interpretation: str, prob_mode: str) -> list[str]:
     return flags
 
 
-def _interpretation_flags_grouped(interpretation: str, prob_mode: str) -> dict[str, list[str]]:
+def _interpretation_flags_grouped(interpretation: str, prob_mode: str, bayesian_aim: str = "") -> dict[str, list[str]]:
     """Return interpretation flags grouped into (cross, frequentist, bayesian, hybrid)."""
     prob_mode = (prob_mode or "").strip().lower()
     if prob_mode not in {"frequentist", "bayesian", "hybrid"}:
         prob_mode = "frequentist"
 
     # Get the full list using the existing rule set
-    all_flags = _interpretation_flags(interpretation, prob_mode)
+    all_flags = _interpretation_flags(interpretation, prob_mode, bayesian_aim=bayesian_aim)
 
     grouped: dict[str, list[str]] = {"cross": [], "frequentist": [], "bayesian": [], "hybrid": []}
 
@@ -1495,7 +1497,12 @@ def build_report(
     # -------------------------
 
     # Grouped issues so the report is easy to scan in a live demo
-    grouped = _interpretation_flags_grouped(interpretation, prob_mode)
+    _bayesian_aim = ""
+    try:
+        _bayesian_aim = str(spec.notes.get("framework", {}).get("bayesian_aim", "")).strip().lower()
+    except Exception:
+        pass
+    grouped = _interpretation_flags_grouped(interpretation, prob_mode, bayesian_aim=_bayesian_aim)
     major_cross: list[str] = list(grouped.get("cross") or [])
     major_freq: list[str] = list(grouped.get("frequentist") or [])
     major_bayes: list[str] = list(grouped.get("bayesian") or [])

@@ -6,3 +6,6 @@ __MACOSX/
 # Local data, indexes, and runs should never be committed
 data/**
 !data/.gitkeep
+.DS_Store
+**/.DS_Store
+dist/
