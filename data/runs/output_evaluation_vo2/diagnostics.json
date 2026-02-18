@@ -1,9 +1,0 @@
-{
-  "model_id": "model1",
-  "residual_checks": {
-    "normality_shapiro_p": 1.3177e-17,
-    "influential_points_count": 210,
-    "influential_threshold": 0.001
-  },
-  "notes": "Residual plots generated. Normality and influence assessed."
-}

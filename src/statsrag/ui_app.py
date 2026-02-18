@@ -15,7 +15,7 @@ from statsrag.prompts import julius_prompt_from_spec
 from statsrag.schema import AnalysisSpec, Transformations, Validation
 from statsrag.verify import build_report
 
-DATA_DIR = Path(os.environ.get("VO2RAG_DATA_DIR", "/data"))
+DATA_DIR = Path(os.environ.get("STATSRAG_DATA_DIR", os.environ.get("VO2RAG_DATA_DIR", "/data")))
 SOURCES_DIR = DATA_DIR / "sources"
 INDEX_DIR = DATA_DIR / "index"
 RUNS_DIR = DATA_DIR / "runs"

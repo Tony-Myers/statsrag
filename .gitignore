@@ -9,3 +9,7 @@ data/**
 .DS_Store
 **/.DS_Store
 dist/
+!data/index/.gitkeep
+!data/runs/.gitkeep
+!data/sources/.gitkeep
+!data/models/.gitkeep

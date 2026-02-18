@@ -1,8 +1,0 @@
-{
-  "flag_analysis": 0.005,
-  "philosophy_rag": 9.899,
-  "claim_retrieval": 33.767,
-  "n_claims": 5,
-  "snapshots_and_global_rag": 0.011,
-  "total": 43.687
-}
